@@ -34,6 +34,7 @@ var vel = []; // velocity of each vert
 var edges = []; // pairs of vert indices
 var neighbors = [];
 var faces = []; // list of vert indices
+var type = [];
 var pending_commands = [];
 var current_pattern = "";
 
@@ -46,6 +47,7 @@ var target_mesh = {
     verts: [], // each: { p3: p3, p2: p3, edges: [] }  N.B. here edges is a sparse array (contains undefined)
     edges: [], // each: { verts: [], faces: [] }
     faces: [], // each: { verts: [], edges: [], visited: bool }
+    type: []
 };
 
 var stitch_path = [];
@@ -64,12 +66,14 @@ function clear() {
     edges = [];
     neighbors = [];
     faces = [];
+    type = [];
     pending_commands = [];
     current_pattern = "";
     target_mesh = { 
         verts: [], // each: { p3: p3, p2: p3, edges: [], faces: [] }  N.B. here edges is a sparse array (contains undefined)
         edges: [], // each: { verts: [], faces: [] }
         faces: [], // each: { verts: [], edges: [], visited: bool }
+        type: []
     };
     stitch_path = [];
 }
@@ -112,7 +116,8 @@ function pointInRect( p, rect ) {
            p.y > rect.y && p.y < ( rect.y + rect.height );
 }
 
-function add_stitch( p) {
+function add_stitch( p, t="s") {
+    type.push( t );
     verts.push( fuzz( p ) );
     vel.push( p3(0,0,0) );
     neighbors.push( [] );
@@ -178,13 +183,21 @@ function join_relative( ir ) {
 }
 
 function single_crochet_with( i ) {
-    // try to put it somewhere sensible:
-    // at midpoint between joined stitch and natural extension:
-    add_stitch( mid( mid( verts[ verts.length-1 ], verts[ i ] ), add( verts[verts.length-1], normalize( sub( verts[verts.length-1], verts[verts.length-2] ) ) ) ) );
-    
-    make_edge( verts.length-1, i );
-    make_edge( verts.length-1, verts.length-2 );
-    add_possible_face( i, verts.length-1, verts.length-2 );
+    // Calculate direction vector from previous to current stitch
+    var direction = normalize(sub(verts[verts.length-1], verts[verts.length-2]));
+
+    // Calculate natural upward extension point
+    var natural_extension = add(verts[verts.length-1], direction);
+
+    // Calculate midpoint between current stitch and target stitch
+    var target_midpoint = mid(verts[verts.length-1], verts[i]);
+
+    // Final position is midpoint between target midpoint and natural extension
+    add_stitch(mid(target_midpoint, natural_extension), "S");
+
+    make_edge(verts.length-1, i);
+    make_edge(verts.length-1, verts.length-2);
+    add_possible_face(i, verts.length-1, verts.length-2);
 }
 
 function single_crochet_with_relative( ir ) {
@@ -202,11 +215,35 @@ function single_crochet_with_two_relative( ir1, ir2 ) {
     add_possible_face( i2, verts.length-1, verts.length-2 );
 }
 
+function double_crochet_with(i) {
+    // Double crochet is taller than single crochet
+    // Calculate direction vector from previous to current stitch
+    var direction = mul( normalize(sub(verts[verts.length-1], verts[verts.length-2])), 5.0);
+    
+    // Calculate natural upward extension point
+    var natural_extension = add(verts[verts.length-1], direction);
+    
+    // Calculate midpoint between current stitch and target stitch
+    var target_midpoint = mid(verts[verts.length-1], verts[i]);
+    
+    // Final position is midpoint between target midpoint and natural extension
+    add_stitch(mid(target_midpoint, natural_extension), "D");
+    
+    // Connect it
+    make_edge(verts.length-1, i);
+    make_edge(verts.length-1, verts.length-2);
+    add_possible_face(i, verts.length-1, verts.length-2);
+}
+
+function double_crochet_with_relative(ir) {
+    double_crochet_with(verts.length + ir - 1);
+}
+
 function doNextStitch( same_location ) {
     if( !pending_commands || pending_commands.length == 0 ) return;
     var command = pending_commands.shift();
     if( !command || command.length == 0 ) return;
-    var tokens = command.match( /(c)|(sc)(-\d+)(-\d+)|(sc)(-\d+)/ );
+    var tokens = command.match( /(c)|(sc)(-\d+)(-\d+)|(sc)(-\d+)|(dc)(-\d+)/ );
     if( !tokens ) { alert( 'Unknown command: ' + command ); pending_commands = []; }
     if( tokens[1]=='c') {
         chain( same_location );
@@ -216,6 +253,9 @@ function doNextStitch( same_location ) {
     }
     else if( tokens[5]=='sc' ) {
         single_crochet_with_relative( parseInt( tokens[6] ) );
+    }
+    else if(tokens[7]=='dc') {
+        double_crochet_with_relative(parseInt(tokens[8]));
     }
     else { 
         alert( 'Unknown command: ' + command ); 
@@ -322,7 +362,7 @@ function loadPattern( pattern ) {
         var post = pattern.substr( end+1+digits.length );
         pattern = pre + new Array( parseInt(digits)+1 ).join( inside ) + post;
     }
-    pending_commands = pending_commands.concat( pattern.match( /c|sc-\d+-\d+|sc-\d+/g ) );
+    pending_commands = pending_commands.concat( pattern.match( /c|sc-\d+-\d+|sc-\d+|dc-\d+/g ) );
 }
 
 function init() {
@@ -491,9 +531,16 @@ function drawMesh() {
     }
     
     // draw the verts
-    ctx.fillStyle = "rgb(0,0,0)";
-    for( var i = 0; i < verts2d.length; ++i )
+    for( var i = 0; i < verts2d.length; ++i ) {
+        if (type[i] == "S") {
+            ctx.fillStyle = "rgb(255,0,0)";
+        } else if (type[i] == "D") {
+            ctx.fillStyle = "rgb(0,0,255)";
+        } else {
+            ctx.fillStyle = "rgb(0,0,0)";
+        }
         point( verts2d[i], "" );
+    }
 }
 
 function drawRect( x, y, w, h ) {
@@ -1106,6 +1153,7 @@ instructions how to enable JavaScript in your web browser</a>.
 <tr><td align="right">c</td><td>chain</td></tr>
 <tr><td align="right">sc<i>-n</i></td><td>single crochet joined to the stitch from <i>n</i> stitches ago</td></tr>
 <tr><td align="right">sc<i>-n-m</i></td><td>single crochet joined to two stitches: from <i>n</i> stitches ago and from <i>m</i> stitches ago (can be used for an 'invisible decrease')</td></tr>
+<tr><td align="right">dc<i>-n</i></td><td>double crochet joined to the stitch from <i>n</i> stitches ago</td></tr>
 <tr><td align="right">(<i>seq</i>)<i>n</i></td><td>repeat <i>seq</i> for <i>n</i> times</td></tr>
 </table>
 
@@ -1114,6 +1162,7 @@ instructions how to enable JavaScript in your web browser</a>.
 <tr><td align="right"><tt>(c)20</tt></td><td>chain 20</td></tr>
 <tr><td align="right"><tt>(c)20,sc-19</tt></td><td>make a loop of 20 chained stitches joined with a single crochet</td></tr>
 <tr><td align="right"><tt>c,c,c,c,sc-2,sc-4</tt></td><td>make two rows of 3 stitches</td></tr>
+<tr><td align="right"><tt>(c)5,dc-3,dc-5</tt></td><td>make a row of 5 chain stitches followed by 4 double crochet stitches</td></tr>
 </table>
 <p>(You can copy-paste these examples into the 'Edit Pattern' box on the left and then hit 'Update'.)</p>
 
