@@ -28,3 +28,13 @@ Other work:
   * http://www.slideshare.net/jmallos/triangle-strip-knitting (James Mallos, ISAMA 2010)
   * http://www.geocities.jp/igarashi_lab/papers/knit_pg08.pdf (Igarashi et al., 2008)
   * http://www.ics.uci.edu/~gopi/PAPERS/Euro04.pdf (Single-Strip Triangulation, Gopi and Eppstein, 2004)
+
+
+----
+
+Updates in this fork:
+---------------------
+
+* Support for double crochet
+  * Adjust the physics to account for double crochet
+* Color code the stitches to make it easier to spot

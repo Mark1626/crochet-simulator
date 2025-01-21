@@ -265,21 +265,48 @@ function doNextStitch( same_location ) {
 
 // too close = repulsion, too far = attraction
 function get_connection_force_on_a( a, b ) {
-    var x = sub( a, b );
+    var x = sub( verts[a], verts[b] );
     var ab2 = len2( x );
     var ab = Math.sqrt( ab2 );
     var k = 0.3;
     var d = target_edge_length;
+    
+    // Special handling for double crochet connections
+    if (type[a] === "D" || type[b] === "D") {
+        if (type[a] === "D" && type[b] === "D") {
+            // Double-to-double connections should maintain larger spacing
+            d = target_edge_length * 1.8;
+            k = 0.35;
+        } else {
+            // Double-to-other connections need different spacing
+            d = target_edge_length * 1.5;
+            k = 0.3;
+        }
+    }
     return mul( x, k * ( d - ab ) / ab );
 }
 
 // too close = weak repulsion
 function get_weak_repulsion_force_on_a( a, b ) {
-    var x = sub( a, b );
+    var x = sub( verts[a], verts[b] );
     var ab2 = len2( x );
     var d = 8 * target_edge_length;
+    var k = 0.001;
+    
+    // Adjust repulsion for double crochet
+    if (type[a] === "D" || type[b] === "D") {
+        if (type[a] === "D" && type[b] === "D") {
+            // Reduced repulsion between double crochet stitches
+            d = 10 * target_edge_length;
+            k = 0.0015;
+        } else {
+            // Normal repulsion for double-to-other
+            d = 9 * target_edge_length;
+            k = 0.001;
+        }
+    }
+    
     if( ab2 < d*d ) {
-        var k = 0.001;
         var ab = Math.sqrt( ab2 );
         return mul( x, k * ( d - ab ) / ab );
     }
@@ -288,50 +315,88 @@ function get_weak_repulsion_force_on_a( a, b ) {
 
 // move the verts a little in the direction of sum of the forces acting on them
 function relax() {
-    // damp the speed
-    for( var a = 0; a < verts.length; ++a )
-        vel[a] = mul( vel[a], 0.97 );
+    // damp the speed more aggressively
+    for( var a = 0; a < verts.length; ++a ) {
+        var dampFactor = 0.95;
+        if (type[a] === "D") {
+            dampFactor = 0.93;
+        }
+        vel[a] = mul( vel[a], dampFactor );
+    }
+    
     // add a spring force along edges
     for( var i = 0; i < edges.length; ++i ) {
-        a = edges[i][0];
-        b = edges[i][1];
-        // add the spring forces from this edge
-        var m = get_connection_force_on_a( verts[a], verts[b] );
+        var a = edges[i][0];
+        var b = edges[i][1];
+        var m = get_connection_force_on_a( a, b );
         vel[a] = add( vel[a], m );
         vel[b] = sub( vel[b], m );
     }
+    
+    // Add inflation force
     if( inflate ) {
         // I... I stumbled across this by a coding error. Adding an inflationary term seems to make all the difference.
         var k = 0.001;
         for( var i = 0; i < verts.length; ++i ) {
+            var k = 0.001;
+            if (type[i] === "D") {
+                k = 0.0015;
+                // Reduced upward component
+                var upForce = p3(0, 0.0005, 0);
+                vel[i] = add(vel[i], upForce);
+            }
             vel[i] = add( vel[i], mul( normalize( verts[i] ), k ) );
         }
     }
-    // add a weak repulsion from every second-neighbor
+    
+    // add repulsion from neighbors
     for( var a = 0; a < verts.length; ++a ) {
         for( var iN = 0; iN < neighbors[a].length; ++iN ) {
             var n = neighbors[a][iN];
             for( var iNN = 0; iNN < neighbors[n].length; ++iNN ) {
                 var nn = neighbors[n][iNN];
                 if( nn == a ) continue;
-                var m = get_weak_repulsion_force_on_a( verts[a], verts[nn] );
+                var m = get_weak_repulsion_force_on_a( a, nn );
                 vel[a] = add( vel[a], m );
             }
         }
     }
-    // apply the movement
+    
+    // Additional height maintenance for double crochet
+    for( var i = 0; i < verts.length; ++i ) {
+        if (type[i] === "D") {
+            // Find connected stitches
+            for (var j = 0; j < neighbors[i].length; j++) {
+                var n = neighbors[i][j];
+                if (type[n] !== "D") {
+                    // Add gentler upward force
+                    var heightDiff = verts[i].y - verts[n].y;
+                    if (heightDiff < target_edge_length * 1.5) {
+                        vel[i] = add(vel[i], p3(0, 0.02, 0));
+                    }
+                }
+            }
+        }
+    }
+    
+    // apply the movement with tighter speed limits
     var max_speed = 0;
-    for( var a = 0; a < verts.length; ++a )
-    {
+    for( var a = 0; a < verts.length; ++a ) {
         var speed = Math.sqrt( len2( vel[a] ) );
-        if( speed > 0.2 )
-            vel[a] = mul( vel[a], 0.2 / speed );
+        var speed_limit = 0.15;
+        if (type[a] === "D") {
+            speed_limit = 0.18;
+        }
+        if( speed > speed_limit ) {
+            vel[a] = mul( vel[a], speed_limit / speed );
+        }
         verts[a] = add( verts[a], vel[a] );
         max_speed = Math.max( speed, max_speed );
     }
-    recenter();
     
-    return max_speed < 0.1; // have we relaxed enough?
+    recenter();
+    // Increased relaxation threshold for better stability
+    return max_speed < 0.15;
 }
 
 function recenter() {
@@ -867,11 +932,12 @@ function flipAnUnvisitedTriangle() {
         // find an edge that joins us to a visited face
         for( var iiEdge = 0; iiEdge < unvisited_face.edges.length; ++iiEdge ) {
             var iEdge = unvisited_face.edges[ iiEdge ];
-            var edge_faces = target_mesh.edges[ iEdge ].faces;
-            var iOtherFace = ( edge_faces[0] == iUnvisitedFace ) ? edge_faces[1] : edge_faces[0];
-            if( target_mesh.faces[ iOtherFace].visited ) {
-                // found a visited/unvisited pair of neighboring faces
-                return flipUnvisitedTriangle( iUnvisitedFace, iOtherFace, iEdge );
+            for( var iiFace = 0; iiFace < target_mesh.edges[ iEdge ].faces.length; ++iiFace ) {
+                var iFace = target_mesh.edges[ iEdge ].faces[ iiFace ];
+                if( iFace != iUnvisitedFace && target_mesh.faces[ iFace].visited ) {
+                    // found a visited/unvisited pair of neighboring faces
+                    return flipUnvisitedTriangle( iUnvisitedFace, iFace, iEdge );
+                }
             }
         }
     }
@@ -955,10 +1021,10 @@ function getOtherVert( iFace, iVert1, iVert2 ) {
     throw "getOtherVert fail";
 }
 
-function extendStitchAroundVert( iStartStitch, iVert ) {
+function extendStitchAroundVert( iiStitch, iVert ) {
     // re-route the stitch path around the other side of iVert
-    var iStartFace = stitch_path[ iStartStitch ];
-    var iEndFace = stitch_path[ iStartStitch + 1 ];
+    var iStartFace = stitch_path[ iiStitch ];
+    var iEndFace = stitch_path[ iiStitch + 1 ];
     // insert an unvisited face that is a neighbor of iEndFace and has iVert as a vert, while one exists
     var added = false;
     while( true ) {
@@ -969,7 +1035,7 @@ function extendStitchAroundVert( iStartStitch, iVert ) {
             if( !target_mesh.faces[ iFace ].visited && iEdge > -1 )
             {
                 // insert the new stitch into the path
-                stitch_path.splice( iStartStitch + 1, 0, iFace ); // (insert just before iStartStitch+1)
+                stitch_path.splice( iiStitch + 1, 0, iFace ); // (insert just before iStartStitch+1)
                 target_mesh.faces[ iFace ].visited = true;
                 iEndFace = iFace;
                 added = true;
@@ -1176,6 +1242,26 @@ instructions how to enable JavaScript in your web browser</a>.
 
 <hr>
 
+<h2>What am I looking at?</h2>
+<p>
+This is a simulator for crochet stitches. It simulates the physical structure of crochet by treating each stitch as a point in 3D space,
+connected to its neighbors by springs. The points move around until they find positions that satisfy the spring forces.
+</p>
+<p>
+This fork adds support for double crochet stitches (dc) along with the original chain and single crochet stitches. The stitches are color-coded for easy identification:
+</p>
+<ul>
+<li>Black - Chain stitches</li>
+<li>Red - Single crochet stitches</li>
+<li>Blue - Double crochet stitches</li>
+</ul>
+
+<p>The grey lines show how the stitches are connected to each other. You can rotate the view by clicking and dragging.</p>
+
+<p>Hit the 'Clear' button to start over.</p>
+
+<hr>
+
 <h3>Specify the row lengths:</h3>
 <p>The section above is powerful but hard to use. If you are crocheting in the round then you can just specify how many stitches are in each row and it will compute the stitches for you.</p>
 <p>Enter comma-separated row lengths in the box below, and hit the 'Go' button. E.g. <tt>6,12,18,24,30</tt>
@@ -1187,20 +1273,15 @@ instructions how to enable JavaScript in your web browser</a>.
 
 <hr>
 
-<h3>What am I looking at?</h3>
-
-<p>This is a crochet simulator. It shows you what shape you might get if you follow a crochet pattern.</p>
-
-<p>To try it out, type <tt>c</tt> in the 'Add stitches' box above and hit the 'Add' button. 
-The new chain stitch is added to the pattern and appears in the 3D view. Do it a few times, or type <tt>cccc</tt> to add several at once.
-
-<p>Other commands are shown in the section on the right. Commas between stitches are optional.
+<p>Other commands are shown in the section on the right. Commas between stitches are optional.</p>
 
 <p>Here's the pattern for a granny square: <tt>(c)12(c,sc-2,sc-4,sc-6,sc-8,sc-10,sc-12,sc-14,sc-16,sc-18,sc-20,sc-22)11</tt>
 
-<p>See the project wiki for more patterns: <a href="https://github.com/timhutton/crochet-simulator/wiki">https://github.com/timhutton/crochet-simulator/wiki</a></p>
+<p>Credits to the author <a href="https://github.com/timhutton">Tim Hutton</a> for creating the simulator. I plan to add more modification in this fork</p>
 
-<p>More details here: <a href="https://github.com/timhutton/crochet-simulator">https://github.com/timhutton/crochet-simulator</a></p> 
+<p>More details in the fork here: <a href="https://github.com/mark1626/crochet-simulator">https://github.com/mark1626/crochet-simulator</a></p>
+
+<p>See the upstream project wiki for more patterns: <a href="https://github.com/timhutton/crochet-simulator/wiki">https://github.com/timhutton/crochet-simulator/wiki</a></p>
 
 <hr>
 <h3>Load a target mesh:</h3>
